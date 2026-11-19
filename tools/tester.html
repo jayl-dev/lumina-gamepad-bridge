@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP Gamepad Tester</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1b1f24; --muted: #667085; --line: #d9dde3;
+    --accent: #2563eb; --on: #16a34a; --warn: #b45309; --bad: #dc2626; --key: #eef1f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1216; --panel: #171b21; --text: #e6e9ee; --muted: #98a2b3; --line: #2a313b;
+      --accent: #60a5fa; --on: #4ade80; --warn: #fbbf24; --bad: #f87171; --key: #222833;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  p.sub { margin: 0 0 16px; color: var(--muted); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 820px) { .grid { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button { font: inherit; color: var(--text); background: var(--key); border: 1px solid var(--line); border-radius: 7px; padding: 6px 12px; cursor: pointer; user-select: none; touch-action: none; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.pressed { background: var(--on); border-color: var(--on); color: #fff; }
+  .status { color: var(--muted); }
+  .status.ok { color: var(--on); } .status.err { color: var(--bad); }
+  .pad { display: grid; grid-template-columns: repeat(3, auto); gap: 6px; justify-content: start; }
+  .pad button { width: 64px; }
+  .btns { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 12px 0; }
+  .btns button { padding: 8px 4px; }
+  .sticks { display: flex; gap: 24px; flex-wrap: wrap; margin: 12px 0; }
+  .stick { text-align: center; color: var(--muted); font-size: 12px; }
+  .stick .well { width: 120px; height: 120px; border-radius: 50%; border: 2px solid var(--line); position: relative; background: var(--key); touch-action: none; cursor: grab; margin-bottom: 4px; }
+  .stick .knob { width: 34px; height: 34px; border-radius: 50%; background: var(--accent); position: absolute; left: 43px; top: 43px; pointer-events: none; }
+  label.trig { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+  label.trig input { flex: 1; }
+  kbd { font: 11px ui-monospace, Menlo, monospace; background: var(--key); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+  .legend { color: var(--muted); font-size: 12px; margin-top: 10px; }
+  .readout { font: 12px ui-monospace, Menlo, monospace; }
+  .rb { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0 12px; }
+  .rb span { width: 28px; height: 24px; display: grid; place-items: center; border-radius: 5px; background: var(--key); border: 1px solid var(--line); font-size: 11px; }
+  .rb span.on { background: var(--on); border-color: var(--on); color: #fff; }
+  .axis { display: grid; grid-template-columns: 52px 1fr 64px; align-items: center; gap: 8px; margin: 3px 0; }
+  .bar { height: 10px; background: var(--key); border: 1px solid var(--line); border-radius: 5px; position: relative; overflow: hidden; }
+  .bar i { position: absolute; top: 0; bottom: 0; background: var(--accent); }
+  .bar::after { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--line); }
+  select { font: inherit; color: var(--text); background: var(--key); border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px; max-width: 100%; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+  th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+  td.miss { color: var(--bad); }
+  .hint { color: var(--warn); font-size: 13px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>ESP Gamepad Tester</h1>
+  <p class="sub">Sends input to the Lumina ESP32-S3 board over USB serial, exactly as Lumina would, and reads back what macOS reports through the browser Gamepad API. Use Chrome or Edge. Quit Lumina first, because it holds the serial port exclusively.</p>
+
+  <div class="grid">
+    <section>
+      <h2>1. Send to board</h2>
+      <div class="row">
+        <button id="connect" class="primary">Connect board</button>
+        <button id="release" disabled>Release all</button>
+        <span id="linkStatus" class="status">Not connected</span>
+      </div>
+
+      <div class="sticks">
+        <div class="stick"><div class="well" data-stick="l"><div class="knob"></div></div>Left stick <span data-val="l">0, 0</span></div>
+        <div class="stick"><div class="well" data-stick="r"><div class="knob"></div></div>Right stick <span data-val="r">0, 0</span></div>
+        <div>
+          <div class="pad">
+            <span></span><button data-dpad="up">▲</button><span></span>
+            <button data-dpad="left">◀</button><span></span><button data-dpad="right">▶</button>
+            <span></span><button data-dpad="down">▼</button><span></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="btns" id="buttons"></div>
+      <label class="trig">LT <input type="range" id="lt" min="0" max="255" value="0"><span id="ltv">0</span></label>
+      <label class="trig">RT <input type="range" id="rt" min="0" max="255" value="0"><span id="rtv">0</span></label>
+
+      <div class="legend">
+        Keyboard: <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> left stick ·
+        <kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> right stick ·
+        arrows D-pad · <kbd>1</kbd>/<kbd>3</kbd> LT/RT ·
+        button keys shown on each button. Hold a key to hold the input.
+      </div>
+    </section>
+
+    <section>
+      <h2>2. What macOS reports</h2>
+      <div class="row">
+        <select id="gpSelect"><option value="">No gamepads seen yet</option></select>
+        <button id="mapBtn" disabled>Map inputs</button>
+      </div>
+      <div id="gpHint" class="hint">Chrome only exposes a gamepad after one of its buttons is pressed. Connect the board, then press A.</div>
+      <div id="readback" class="readout"></div>
+      <div id="mapResult"></div>
+    </section>
+  </div>
+</main>
+
+<script>
+// ---- Protocol (must match lumina-gamepad-bridge/src/main.cpp and Lumina's esp_gamepad.m) ----
+const VID = 0x1209, PID = 0x5854, PROTOCOL_VERSION = 1;
+const MSG_PING = 0x01, MSG_REPORT = 0x02, MSG_PONG = 0x81;
+
+function crc8(bytes) {
+  let crc = 0;
+  for (const b of bytes) {
+    crc ^= b;
+    for (let i = 0; i < 8; i++) crc = crc & 0x80 ? ((crc << 1) ^ 0x07) & 0xff : (crc << 1) & 0xff;
+  }
+  return crc;
+}
+
+function frame(type, payload = new Uint8Array()) {
+  const out = new Uint8Array(5 + payload.length);
+  out.set([0xa5, 0x5a, type, payload.length]);
+  out.set(payload, 4);
+  out[4 + payload.length] = crc8(out.subarray(2, 4 + payload.length));
+  return out;
+}
+
+// ---- Gamepad state, using the same HID bit layout as HIDGamepadMakeReport ----
+// Stick values are what Lumina receives from Moonlight (XInput style, Y+ = up).
+const BUTTONS = [
+  { name: 'A', bit: 0, key: 'z' }, { name: 'B', bit: 1, key: 'x' },
+  { name: 'X', bit: 2, key: 'c' }, { name: 'Y', bit: 3, key: 'v' },
+  { name: 'LB', bit: 4, key: 'q' }, { name: 'RB', bit: 5, key: 'e' },
+  { name: 'Back', bit: 6, key: 'tab' }, { name: 'Start', bit: 7, key: 'enter' },
+  { name: 'L3', bit: 8, key: 'f' }, { name: 'R3', bit: 9, key: 'h' },
+  { name: 'Home', bit: 10, key: 'g' },
+];
+const DPAD_KEYS = { arrowup: 'up', arrowdown: 'down', arrowleft: 'left', arrowright: 'right' };
+
+const state = {
+  buttons: 0, dpad: { up: false, down: false, left: false, right: false },
+  lt: 0, rt: 0, lx: 0, ly: 0, rx: 0, ry: 0,
+};
+
+function hat({ up, down, left, right }) {
+  if (up && right) return 1; if (up && left) return 7;
+  if (down && right) return 3; if (down && left) return 5;
+  if (up) return 0; if (right) return 2; if (down) return 4; if (left) return 6;
+  return 8;
+}
+
+const toI16 = v => Math.max(-32768, Math.min(32767, Math.round(v * 32767)));
+
+function reportPayload() {
+  const buf = new ArrayBuffer(14), dv = new DataView(buf);
+  dv.setUint8(0, 0);                       // pad index
+  dv.setUint16(1, state.buttons, true);
+  dv.setUint8(3, hat(state.dpad));
+  dv.setUint8(4, state.lt);
+  dv.setUint8(5, state.rt);
+  dv.setInt16(6, toI16(state.lx), true);
+  dv.setInt16(8, toI16(state.ly), true);
+  dv.setInt16(10, toI16(state.rx), true);
+  dv.setInt16(12, toI16(state.ry), true);
+  return new Uint8Array(buf);
+}
+
+// ---- Serial link ----
+let port = null, writer = null, writing = false, sendPending = false;
+const linkStatus = document.getElementById('linkStatus');
+
+function setStatus(text, cls = '') { linkStatus.textContent = text; linkStatus.className = 'status ' + cls; }
+
+async function connect() {
+  if (!('serial' in navigator)) {
+    setStatus('Web Serial is unavailable. Use Chrome/Edge, and serve this page from localhost if opened as a file fails.', 'err');
+    return;
+  }
+  try {
+    port = await navigator.serial.requestPort({ filters: [{ usbVendorId: VID, usbProductId: PID }] });
+    await port.open({ baudRate: 115200 });
+  } catch (e) {
+    setStatus(e.name === 'InvalidStateError' || /open/i.test(e.message)
+      ? 'Could not open the port. Is Lumina or another serial monitor using it?'
+      : e.message, 'err');
+    port = null;
+    return;
+  }
+  writer = port.writable.getWriter();
+
+  const pong = await ping();
+  if (!pong) { setStatus('Board did not answer ping. Is the Lumina firmware flashed?', 'err'); return; }
+  if (pong.version !== PROTOCOL_VERSION) { setStatus(`Firmware speaks protocol v${pong.version}, tester expects v${PROTOCOL_VERSION}`, 'err'); return; }
+  setStatus(`Connected · protocol v${pong.version} · ${pong.pads} pad(s)`, 'ok');
+  document.getElementById('connect').disabled = true;
+  document.getElementById('release').disabled = false;
+  scheduleSend();
+
+  navigator.serial.addEventListener('disconnect', e => {
+    if (e.target === port) {
+      setStatus('Board unplugged', 'err');
+      port = writer = null;
+      document.getElementById('connect').disabled = false;
+      document.getElementById('release').disabled = true;
+    }
+  });
+}
+
+async function ping() {
+  const reader = port.readable.getReader();
+  await writer.write(frame(MSG_PING));
+  const deadline = Date.now() + 1000;
+  let buf = new Uint8Array();
+  try {
+    while (Date.now() < deadline) {
+      const { value, done } = await Promise.race([
+        reader.read(),
+        new Promise(r => setTimeout(() => r({ value: null }), deadline - Date.now())),
+      ]);
+      if (done) break;
+      if (!value) continue;
+      const next = new Uint8Array(buf.length + value.length);
+      next.set(buf); next.set(value, buf.length); buf = next;
+      for (let i = 0; i + 7 <= buf.length; i++) {
+        if (buf[i] === 0xa5 && buf[i + 1] === 0x5a && buf[i + 2] === MSG_PONG && buf[i + 3] === 2 &&
+            crc8(buf.subarray(i + 2, i + 6)) === buf[i + 6]) {
+          return { version: buf[i + 4], pads: buf[i + 5] };
+        }
+      }
+    }
+    return null;
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+
+// Only the latest state matters: coalesce changes while a write is in flight.
+async function scheduleSend() {
+  renderSent();
+  if (!writer) return;
+  if (writing) { sendPending = true; return; }
+  writing = true;
+  try {
+    do {
+      sendPending = false;
+      await writer.write(frame(MSG_REPORT, reportPayload()));
+    } while (sendPending);
+  } catch (e) {
+    setStatus('Write failed: ' + e.message, 'err');
+  } finally {
+    writing = false;
+  }
+}
+
+function releaseAll() {
+  state.buttons = 0; state.lt = state.rt = 0;
+  state.lx = state.ly = state.rx = state.ry = 0;
+  for (const k in state.dpad) state.dpad[k] = false;
+  document.getElementById('lt').value = 0; document.getElementById('rt').value = 0;
+  scheduleSend();
+}
+
+// ---- Send-side UI ----
+const btnEls = {};
+const btnGrid = document.getElementById('buttons');
+for (const b of BUTTONS) {
+  const el = document.createElement('button');
+  el.innerHTML = `${b.name} <kbd>${b.key === 'enter' ? '⏎' : b.key === 'tab' ? '⇥' : b.key.toUpperCase()}</kbd>`;
+  holdable(el, down => setButton(b.bit, down));
+  btnGrid.appendChild(el);
+  btnEls[b.bit] = el;
+}
+const dpadEls = {};
+for (const el of document.querySelectorAll('[data-dpad]')) {
+  dpadEls[el.dataset.dpad] = el;
+  holdable(el, down => { state.dpad[el.dataset.dpad] = down; scheduleSend(); });
+}
+
+function holdable(el, cb) {
+  el.addEventListener('pointerdown', e => { el.setPointerCapture(e.pointerId); cb(true); });
+  el.addEventListener('pointerup', () => cb(false));
+  el.addEventListener('pointercancel', () => cb(false));
+}
+
+function setButton(bit, down) {
+  state.buttons = down ? state.buttons | (1 << bit) : state.buttons & ~(1 << bit);
+  scheduleSend();
+}
+
+for (const id of ['lt', 'rt']) {
+  document.getElementById(id).addEventListener('input', e => { state[id] = +e.target.value; scheduleSend(); });
+}
+
+for (const well of document.querySelectorAll('[data-stick]')) {
+  const side = well.dataset.stick;
+  const move = e => {
+    const r = well.getBoundingClientRect();
+    let x = (e.clientX - r.left - r.width / 2) / (r.width / 2);
+    let y = -(e.clientY - r.top - r.height / 2) / (r.height / 2);
+    const m = Math.hypot(x, y);
+    if (m > 1) { x /= m; y /= m; }
+    state[side + 'x'] = x; state[side + 'y'] = y;
+    scheduleSend();
+  };
+  well.addEventListener('pointerdown', e => { well.setPointerCapture(e.pointerId); move(e); });
+  well.addEventListener('pointermove', e => { if (well.hasPointerCapture(e.pointerId)) move(e); });
+  const center = () => { state[side + 'x'] = 0; state[side + 'y'] = 0; scheduleSend(); };
+  well.addEventListener('pointerup', center);
+  well.addEventListener('pointercancel', center);
+}
+
+// Keyboard: hold to press
+const STICK_KEYS = { w: ['l', 0, 1], s: ['l', 0, -1], a: ['l', -1, 0], d: ['l', 1, 0],
+                     i: ['r', 0, 1], k: ['r', 0, -1], j: ['r', -1, 0], l: ['r', 1, 0] };
+const heldKeys = new Set();
+
+function applyStickKeys() {
+  for (const side of ['l', 'r']) {
+    let x = 0, y = 0;
+    for (const [k, [s, dx, dy]] of Object.entries(STICK_KEYS)) if (s === side && heldKeys.has(k)) { x += dx; y += dy; }
+    const m = Math.hypot(x, y) || 1;
+    state[side + 'x'] = x / m; state[side + 'y'] = y / m;
+  }
+}
+
+function onKey(e, down) {
+  const key = e.key.toLowerCase();
+  if (e.target.tagName === 'SELECT' || e.metaKey || e.ctrlKey) return;
+  const btn = BUTTONS.find(b => b.key === key);
+  let handled = true;
+  if (btn) setButton(btn.bit, down);
+  else if (DPAD_KEYS[key]) { state.dpad[DPAD_KEYS[key]] = down; scheduleSend(); }
+  else if (STICK_KEYS[key]) { down ? heldKeys.add(key) : heldKeys.delete(key); applyStickKeys(); scheduleSend(); }
+  else if (key === '1' || key === '3') {
+    const id = key === '1' ? 'lt' : 'rt';
+    state[id] = down ? 255 : 0; document.getElementById(id).value = state[id]; scheduleSend();
+  } else handled = false;
+  if (handled) e.preventDefault();
+}
+addEventListener('keydown', e => { if (!e.repeat) onKey(e, true); else if (/^(tab|arrow)/i.test(e.key)) e.preventDefault(); });
+addEventListener('keyup', e => onKey(e, false));
+addEventListener('blur', () => { heldKeys.clear(); releaseAll(); });
+
+document.getElementById('connect').addEventListener('click', connect);
+document.getElementById('release').addEventListener('click', releaseAll);
+
+function renderSent() {
+  for (const b of BUTTONS) btnEls[b.bit].classList.toggle('pressed', !!(state.buttons & (1 << b.bit)));
+  for (const d in dpadEls) dpadEls[d].classList.toggle('pressed', state.dpad[d]);
+  for (const side of ['l', 'r']) {
+    const x = state[side + 'x'], y = state[side + 'y'];
+    const knob = document.querySelector(`[data-stick="${side}"] .knob`);
+    knob.style.transform = `translate(${x * 43}px, ${-y * 43}px)`;
+    document.querySelector(`[data-val="${side}"]`).textContent = `${toI16(x)}, ${toI16(y)}`;
+  }
+  document.getElementById('ltv').textContent = state.lt;
+  document.getElementById('rtv').textContent = state.rt;
+}
+
+// ---- Read-back via Gamepad API ----
+const gpSelect = document.getElementById('gpSelect');
+const readback = document.getElementById('readback');
+let selectedIndex = null;
+
+function pads() { return [...navigator.getGamepads()].filter(Boolean); }
+function selectedPad() { return selectedIndex === null ? null : navigator.getGamepads()[selectedIndex]; }
+const isOurs = gp => /5854/i.test(gp.id) || /lumina/i.test(gp.id);
+
+function refreshPadList() {
+  const list = pads();
+  const prev = gpSelect.value;
+  gpSelect.innerHTML = list.length
+    ? list.map(gp => `<option value="${gp.index}">${isOurs(gp) ? '★ ' : ''}${gp.index}: ${gp.id}</option>`).join('')
+    : '<option value="">No gamepads seen yet</option>';
+  const ours = list.find(isOurs);
+  if (list.some(gp => String(gp.index) === prev)) gpSelect.value = prev;
+  else if (ours) gpSelect.value = ours.index;
+  selectedIndex = gpSelect.value === '' ? null : +gpSelect.value;
+  document.getElementById('gpHint').style.display = list.length ? 'none' : '';
+  document.getElementById('mapBtn').disabled = selectedIndex === null || !writer;
+}
+addEventListener('gamepadconnected', refreshPadList);
+addEventListener('gamepaddisconnected', refreshPadList);
+gpSelect.addEventListener('change', () => { selectedIndex = gpSelect.value === '' ? null : +gpSelect.value; });
+
+function renderReadback() {
+  const gp = selectedPad();
+  if (!gp) { readback.innerHTML = ''; }
+  else {
+    const btns = gp.buttons.map((b, i) => `<span class="${b.pressed ? 'on' : ''}">${i}</span>`).join('');
+    const axes = gp.axes.map((v, i) => {
+      const left = v < 0 ? 50 + v * 50 : 50, width = Math.abs(v) * 50;
+      return `<div class="axis"><span>axis ${i}</span><div class="bar"><i style="left:${left}%;width:${width}%"></i></div><span>${v.toFixed(3)}</span></div>`;
+    }).join('');
+    readback.innerHTML = `<div>mapping: "${gp.mapping || 'non-standard'}" · ${gp.buttons.length} buttons · ${gp.axes.length} axes</div>
+      <div class="rb">${btns}</div>${axes}`;
+  }
+  if (!document.getElementById('mapBtn').disabled !== (selectedIndex !== null && !!writer)) refreshPadList();
+  requestAnimationFrame(renderReadback);
+}
+requestAnimationFrame(renderReadback);
+
+// ---- Map inputs: press each control and record which Gamepad API index moves ----
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function snapshot() {
+  const gp = selectedPad();
+  return gp ? { buttons: gp.buttons.map(b => b.value), axes: [...gp.axes] } : null;
+}
+
+function diff(a, b) {
+  const found = [];
+  b.buttons.forEach((v, i) => { if (Math.abs(v - a.buttons[i]) > 0.5) found.push(`button ${i}`); });
+  b.axes.forEach((v, i) => { if (Math.abs(v - a.axes[i]) > 0.3) found.push(`axis ${i} → ${v.toFixed(2)}`); });
+  return found;
+}
+
+async function mapInputs() {
+  const mapBtn = document.getElementById('mapBtn');
+  mapBtn.disabled = true;
+  const tests = [
+    ...BUTTONS.map(b => [b.name, () => { state.buttons = 1 << b.bit; }]),
+    ...['up', 'down', 'left', 'right'].map(d => [`D-pad ${d}`, () => { state.dpad[d] = true; }]),
+    ['LT', () => { state.lt = 255; }], ['RT', () => { state.rt = 255; }],
+    ['Left stick right', () => { state.lx = 1; }], ['Left stick up', () => { state.ly = 1; }],
+    ['Right stick right', () => { state.rx = 1; }], ['Right stick up', () => { state.ry = 1; }],
+  ];
+  const rows = [];
+  for (const [name, apply] of tests) {
+    releaseAll(); await sleep(150);
+    const before = snapshot();
+    apply(); scheduleSend(); await sleep(150);
+    const after = snapshot();
+    if (!before || !after) { rows.push([name, 'gamepad disappeared']); break; }
+    const found = diff(before, after);
+    rows.push([name, found.length ? found.join(', ') : '']);
+  }
+  releaseAll();
+  document.getElementById('mapResult').innerHTML = `<table><tr><th>Sent</th><th>macOS reported</th></tr>${
+    rows.map(([n, f]) => `<tr><td>${n}</td><td class="${f ? '' : 'miss'}">${f || 'nothing changed'}</td></tr>`).join('')}</table>`;
+  mapBtn.disabled = false;
+}
+document.getElementById('mapBtn').addEventListener('click', mapInputs);
+
+renderSent();
+</script>
+</body>
+</html>
