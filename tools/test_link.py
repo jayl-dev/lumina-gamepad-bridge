@@ -8,14 +8,15 @@ Watch the result in a gamepad tester (e.g. https://hardwaretester.com/gamepad).
 Usage: python3 tools/test_link.py [/dev/cu.usbmodemXXXX]
 Requires pyserial (bundled with Homebrew PlatformIO: $(brew --prefix platformio)/libexec/bin/python).
 """
-import glob
 import math
 import struct
 import sys
 import time
 
 import serial
+from serial.tools import list_ports
 
+VID, PID = 0x1209, 0x5854
 SYNC = b"\xA5\x5A"
 MSG_PING, MSG_REPORT, MSG_PONG = 0x01, 0x02, 0x81
 BTN_A = 1 << 0
@@ -41,18 +42,27 @@ def report(buttons=0, hat=HAT_NONE, lt=0, rt=0, lx=0, ly=0, rx=0, ry=0, pad=0) -
     return frame(MSG_REPORT, struct.pack("<BHBBBhhhh", pad, buttons, hat, lt, rt, lx, ly, rx, ry))
 
 
+def find_port() -> str:
+    if len(sys.argv) > 1:
+        return sys.argv[1]
+    matches = [p.device for p in list_ports.comports() if p.vid == VID and p.pid == PID]
+    if not matches:
+        sys.exit(
+            f"No Lumina ESP Gamepad ({VID:04x}:{PID:04x}) serial port found; "
+            "is the board plugged into its native USB port?"
+        )
+    return sorted(matches)[0]
+
+
 def main():
-    ports = sys.argv[1:] or sorted(glob.glob("/dev/cu.usbmodem*"))
-    if not ports:
-        sys.exit("No /dev/cu.usbmodem* port found; is the board plugged into its native USB port?")
-    port = ports[0]
+    port = find_port()
 
     with serial.Serial(port, 115200, timeout=0.5) as link:
         link.reset_input_buffer()
         link.write(frame(MSG_PING))
         reply = link.read(64)
         idx = reply.find(SYNC + bytes([MSG_PONG, 2]))
-        if idx < 0 or crc8(reply[idx + 2:idx + 6]) != reply[idx + 6]:
+        if idx < 0 or idx + 7 > len(reply) or crc8(reply[idx + 2:idx + 6]) != reply[idx + 6]:
             sys.exit(f"{port}: no valid PONG (got {reply.hex()})")
         print(f"{port}: protocol v{reply[idx + 4]}, {reply[idx + 5]} pad(s)")
 

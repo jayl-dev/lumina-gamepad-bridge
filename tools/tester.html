@@ -68,6 +68,7 @@
       <h2>1. Send to board</h2>
       <div class="row">
         <button id="connect" class="primary">Connect board</button>
+        <button id="disconnect" disabled>Disconnect</button>
         <button id="release" disabled>Release all</button>
         <span id="linkStatus" class="status">Not connected</span>
       </div>
@@ -110,7 +111,7 @@
 </main>
 
 <script>
-// ---- Protocol (must match lumina-gamepad-bridge/src/main.cpp and Lumina's esp_gamepad.m) ----
+// ---- Protocol (must match lumina-gamepad-bridge/include/protocol.h and Lumina's esp_gamepad.m) ----
 const VID = 0x1209, PID = 0x5854, PROTOCOL_VERSION = 1;
 const MSG_PING = 0x01, MSG_REPORT = 0x02, MSG_PONG = 0x81;
 
@@ -177,6 +178,55 @@ const linkStatus = document.getElementById('linkStatus');
 
 function setStatus(text, cls = '') { linkStatus.textContent = text; linkStatus.className = 'status ' + cls; }
 
+function setConnectedUI(connected) {
+  document.getElementById('connect').disabled = connected;
+  document.getElementById('disconnect').disabled = !connected;
+  document.getElementById('release').disabled = !connected;
+}
+
+async function closePort() {
+  const curWriter = writer;
+  const curPort = port;
+  writer = null;
+  port = null;
+  sendPending = false;
+  if (curWriter) {
+    try { curWriter.releaseLock(); } catch {}
+  }
+  if (curPort) {
+    try { await curPort.close(); } catch {}
+  }
+  setConnectedUI(false);
+}
+
+function resetState() {
+  state.buttons = 0; state.lt = state.rt = 0;
+  state.lx = state.ly = state.rx = state.ry = 0;
+  for (const k in state.dpad) state.dpad[k] = false;
+  document.getElementById('lt').value = 0; document.getElementById('rt').value = 0;
+}
+
+async function disconnect() {
+  if (writer) {
+    resetState();
+    renderSent();
+    try { await writer.write(frame(MSG_REPORT, reportPayload())); } catch {}
+  }
+  await closePort();
+  setStatus('Disconnected');
+}
+
+if ('serial' in navigator) {
+  navigator.serial.addEventListener('disconnect', e => {
+    if (e.target === port) {
+      port = writer = null;
+      sendPending = false;
+      setConnectedUI(false);
+      setStatus('Board unplugged', 'err');
+    }
+  });
+}
+
 async function connect() {
   if (!('serial' in navigator)) {
     setStatus('Web Serial is unavailable. Use Chrome/Edge, and serve this page from localhost if opened as a file fails.', 'err');
@@ -195,21 +245,19 @@ async function connect() {
   writer = port.writable.getWriter();
 
   const pong = await ping();
-  if (!pong) { setStatus('Board did not answer ping. Is the Lumina firmware flashed?', 'err'); return; }
-  if (pong.version !== PROTOCOL_VERSION) { setStatus(`Firmware speaks protocol v${pong.version}, tester expects v${PROTOCOL_VERSION}`, 'err'); return; }
+  if (!pong) {
+    await closePort();
+    setStatus('Board did not answer ping. Is the Lumina firmware flashed?', 'err');
+    return;
+  }
+  if (pong.version !== PROTOCOL_VERSION) {
+    await closePort();
+    setStatus(`Firmware speaks protocol v${pong.version}, tester expects v${PROTOCOL_VERSION}`, 'err');
+    return;
+  }
   setStatus(`Connected · protocol v${pong.version} · ${pong.pads} pad(s)`, 'ok');
-  document.getElementById('connect').disabled = true;
-  document.getElementById('release').disabled = false;
+  setConnectedUI(true);
   scheduleSend();
-
-  navigator.serial.addEventListener('disconnect', e => {
-    if (e.target === port) {
-      setStatus('Board unplugged', 'err');
-      port = writer = null;
-      document.getElementById('connect').disabled = false;
-      document.getElementById('release').disabled = true;
-    }
-  });
 }
 
 async function ping() {
@@ -253,17 +301,14 @@ async function scheduleSend() {
       await writer.write(frame(MSG_REPORT, reportPayload()));
     } while (sendPending);
   } catch (e) {
-    setStatus('Write failed: ' + e.message, 'err');
+    if (writer) setStatus('Write failed: ' + e.message, 'err');
   } finally {
     writing = false;
   }
 }
 
 function releaseAll() {
-  state.buttons = 0; state.lt = state.rt = 0;
-  state.lx = state.ly = state.rx = state.ry = 0;
-  for (const k in state.dpad) state.dpad[k] = false;
-  document.getElementById('lt').value = 0; document.getElementById('rt').value = 0;
+  resetState();
   scheduleSend();
 }
 
@@ -349,6 +394,7 @@ addEventListener('keyup', e => onKey(e, false));
 addEventListener('blur', () => { heldKeys.clear(); releaseAll(); });
 
 document.getElementById('connect').addEventListener('click', connect);
+document.getElementById('disconnect').addEventListener('click', disconnect);
 document.getElementById('release').addEventListener('click', releaseAll);
 
 function renderSent() {

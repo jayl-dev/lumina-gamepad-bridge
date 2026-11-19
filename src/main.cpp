@@ -21,25 +21,13 @@
 
 #include "USB.h"
 #include "USBHID.h"
+#include "protocol.h"
 
 #if ARDUINO_USB_MODE
   #error "Build with ARDUINO_USB_MODE=0 (USB-OTG/TinyUSB mode); see platformio.ini"
 #endif
 
-static constexpr uint16_t LUMINA_USB_VID = 0x1209;
-static constexpr uint16_t LUMINA_USB_PID = 0x5854;
-
-static constexpr uint8_t PROTOCOL_VERSION = 1;
-static constexpr uint8_t PAD_COUNT = 1;
-
-static constexpr uint8_t FRAME_SYNC0 = 0xA5;
-static constexpr uint8_t FRAME_SYNC1 = 0x5A;
-static constexpr uint8_t MSG_PING = 0x01;
-static constexpr uint8_t MSG_REPORT = 0x02;
-static constexpr uint8_t MSG_PONG = 0x81;
-
-static constexpr uint8_t REPORT_ID = 0x01;
-static constexpr size_t REPORT_BODY_LEN = 13;  // buttons(2) hat(1) triggers(2) sticks(8)
+using namespace lumina;
 
 // Identical to kHIDReportDescriptor in Lumina/src/platform/macos/hid_gamepad.m
 static const uint8_t kReportDescriptor[] = {
@@ -121,22 +109,28 @@ USBHID HID;
 LuminaGamepad Gamepad;
 
 static uint8_t pendingBody[REPORT_BODY_LEN];
+static uint8_t lastSentBody[REPORT_BODY_LEN];
+static bool hasSentReport = false;
 static bool reportDirty = false;
 
-static uint8_t crc8(const uint8_t *data, size_t len) {
-  uint8_t crc = 0;
-  for (size_t i = 0; i < len; i++) {
-    crc ^= data[i];
-    for (int b = 0; b < 8; b++) {
-      crc = (crc & 0x80) ? (uint8_t) ((crc << 1) ^ 0x07) : (uint8_t) (crc << 1);
-    }
-  }
-  return crc;
+// DevKitC-1 v1.0 puts the RGB LED on RGB_BUILTIN (GPIO 48); v1.1 uses GPIO 38.
+// Override with -DSTATUS_LED_PIN=38 in platformio.ini if your board stays dark.
+#if !defined(STATUS_LED_PIN) && defined(RGB_BUILTIN)
+  #define STATUS_LED_PIN RGB_BUILTIN
+#endif
+
+static void setStatusLed(bool connected) {
+#ifdef STATUS_LED_PIN
+  // Dim green when host holds the serial link open, dim amber while idle/waiting.
+  neopixelWrite(STATUS_LED_PIN, connected ? 0 : 12, connected ? 12 : 6, 0);
+#else
+  (void) connected;
+#endif
 }
 
 static void setPending(const uint8_t *body) {
   memcpy(pendingBody, body, REPORT_BODY_LEN);
-  reportDirty = true;
+  reportDirty = !hasSentReport || memcmp(pendingBody, lastSentBody, REPORT_BODY_LEN) != 0;
 }
 
 static void sendPong() {
@@ -161,77 +155,39 @@ static void handleFrame(uint8_t type, const uint8_t *payload, uint8_t len) {
   }
 }
 
-/**
- * Byte-at-a-time frame parser. Resyncs on the next 0xA5 0x5A after any error.
- */
-class FrameParser {
-public:
-  void feed(uint8_t byte) {
-    switch (state) {
-      case State::Sync0:
-        if (byte == FRAME_SYNC0) {
-          state = State::Sync1;
-        }
-        break;
-      case State::Sync1:
-        state = (byte == FRAME_SYNC1) ? State::Type : (byte == FRAME_SYNC0 ? State::Sync1 : State::Sync0);
-        break;
-      case State::Type:
-        buf[0] = byte;
-        state = State::Len;
-        break;
-      case State::Len:
-        buf[1] = byte;
-        received = 0;
-        state = byte ? State::Payload : State::Crc;
-        break;
-      case State::Payload:
-        buf[2 + received++] = byte;
-        if (received == buf[1]) {
-          state = State::Crc;
-        }
-        break;
-      case State::Crc:
-        if (crc8(buf, 2 + buf[1]) == byte) {
-          handleFrame(buf[0], &buf[2], buf[1]);
-        }
-        state = State::Sync0;
-        break;
-    }
-  }
-
-private:
-  enum class State { Sync0, Sync1, Type, Len, Payload, Crc };
-  State state = State::Sync0;
-  uint8_t buf[2 + 255] = {};  // type, len, payload
-  uint8_t received = 0;
-};
-
-static FrameParser parser;
+static FrameParser parser(handleFrame);
 static bool hostConnected = false;
 
 void setup() {
+  static char serialNum[24];
+  snprintf(serialNum, sizeof(serialNum), "LUMINA-%012llX", (unsigned long long) ESP.getEfuseMac());
+
   USB.VID(LUMINA_USB_VID);
   USB.PID(LUMINA_USB_PID);
   USB.manufacturerName("Lumina");
   USB.productName("Lumina ESP Gamepad");
-  USB.serialNumber("LUMINA-ESP-0");
+  USB.serialNumber(serialNum);
 
   HID.addDevice(&Gamepad, sizeof(kReportDescriptor));
   HID.begin();
   LinkSerial.begin(115200);
   USB.begin();
 
+  setStatusLed(false);
   setPending(kNeutralBody);
 }
 
 void loop() {
   // DTR drops when Lumina closes the port or exits; never leave inputs held
   bool connected = (bool) LinkSerial;
-  if (hostConnected && !connected) {
-    setPending(kNeutralBody);
+  if (connected != hostConnected) {
+    hostConnected = connected;
+    setStatusLed(connected);
+    if (!connected) {
+      parser.reset();
+      setPending(kNeutralBody);
+    }
   }
-  hostConnected = connected;
 
   int budget = 512;
   while (budget-- > 0 && LinkSerial.available() > 0) {
@@ -241,6 +197,8 @@ void loop() {
   // Only the latest state matters, so bursts from the host collapse into one report
   if (reportDirty && HID.ready()) {
     if (HID.SendReport(REPORT_ID, pendingBody, REPORT_BODY_LEN, 5)) {
+      memcpy(lastSentBody, pendingBody, REPORT_BODY_LEN);
+      hasSentReport = true;
       reportDirty = false;
     }
   }

@@ -19,12 +19,23 @@ The board appears as one composite USB device (`1209:5854`, "Lumina ESP Gamepad"
 ```sh
 pio run                 # build
 pio run -t upload       # flash
+pio test -e native      # run protocol parser unit tests on the host
 ```
+
+> Pass `-e native` when running tests; a bare `pio test` also runs against the `esp32-s3`
+> environment and attempts to upload the test runner to the board.
 
 Plug the board in through its **native USB** port. On DevKitC boards that's the port labelled
 `USB`, not `UART`/`COM`. If the first upload can't connect, hold **BOOT**, tap **RST**,
 release **BOOT**, then upload again. Once this firmware is running, later uploads reset into
 the bootloader automatically.
+
+### Status LED
+
+The onboard RGB LED shows **dim amber** while idle/waiting for a host and **dim green** while
+Lumina (or a tester) holds the serial link open. DevKitC-1 v1.0 wires the LED to GPIO 48
+(`RGB_BUILTIN`); on v1.1 boards it is on GPIO 38, so uncomment `-DSTATUS_LED_PIN=38` in
+`platformio.ini` if the LED stays dark.
 
 ## Test without Lumina
 
@@ -78,5 +89,6 @@ over `<type> <len> <payload>`.
 | `0x81` PONG   | board → host | protocol version (1), pad count |
 | `0x02` REPORT | host → board | pad index + 13-byte HID report body (buttons u16, hat u8, LT u8, RT u8, LX/LY/RX/RY i16, little-endian) |
 
-The Lumina side lives in `Lumina/src/platform/macos/esp_gamepad.{h,m}`. Keep both sides in sync
-when changing the protocol, VID/PID or report descriptor.
+The protocol definitions live in `include/protocol.h` (and the HID report descriptor in
+`src/main.cpp`). The Lumina side lives in `Lumina/src/platform/macos/esp_gamepad.{h,m}`. Keep both
+sides in sync when changing the protocol, VID/PID or report descriptor.
