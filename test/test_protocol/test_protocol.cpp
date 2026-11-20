@@ -3,6 +3,7 @@
 #include <cstring>
 #include <vector>
 
+#include "profile_generic.h"
 #include "protocol.h"
 
 using namespace lumina;
@@ -166,6 +167,63 @@ void test_recovers_valid_frame_starting_inside_corrupt_frame() {
   TEST_ASSERT_EQUAL_HEX8(MSG_PING, g_frames[0].type);
 }
 
+void test_wire_to_hid_report_translation() {
+  // Wire: A(0) + X(2) + LB(4) + Back(6) + L3(8) + Home(10), hat=2(E),
+  // LT=0xAA, RT=0x55, LX=0x1122, LY=0x3344, RX=0x5566, RY=0x7788
+  const uint16_t wireButtons = (1u << 0) | (1u << 2) | (1u << 4) | (1u << 6) | (1u << 8) | (1u << 10);
+  const uint8_t wire[REPORT_BODY_LEN] = {
+      static_cast<uint8_t>(wireButtons & 0xFF),
+      static_cast<uint8_t>(wireButtons >> 8),
+      0x02,
+      0xAA, 0x55,
+      0x22, 0x11, 0x44, 0x33, 0x66, 0x55, 0x88, 0x77,
+  };
+
+  uint8_t hid[REPORT_BODY_LEN] = {};
+  wireToHidReport(wire, hid);
+
+  // Expected HID buttons: A->b0, X->b3, LB->b6, Back->b10, Home->b12, L3->b13
+  const uint16_t expectedButtons = (1u << 0) | (1u << 3) | (1u << 6) | (1u << 10) | (1u << 12) | (1u << 13);
+  const uint16_t gotButtons = static_cast<uint16_t>(hid[0]) | (static_cast<uint16_t>(hid[1]) << 8);
+  TEST_ASSERT_EQUAL_HEX16(expectedButtons, gotButtons);
+  TEST_ASSERT_EQUAL_HEX8(0x02, hid[2]);
+
+  // X axes pass through; Y axes are inverted (XInput up-positive -> HID down-positive)
+  TEST_ASSERT_EQUAL_INT16(0x1122, readI16(&hid[3]));   // LX
+  TEST_ASSERT_EQUAL_INT16(-0x3344, readI16(&hid[5]));  // LY
+  TEST_ASSERT_EQUAL_INT16(0x5566, readI16(&hid[7]));   // RX
+  TEST_ASSERT_EQUAL_INT16(-0x7788, readI16(&hid[9]));  // RY
+
+  // Triggers: Ry(a4)=RT=0x55, Rz(a5)=LT=0xAA
+  TEST_ASSERT_EQUAL_HEX8(0x55, hid[11]);
+  TEST_ASSERT_EQUAL_HEX8(0xAA, hid[12]);
+}
+
+void test_wire_to_hid_y_axis_extremes() {
+  uint8_t wire[REPORT_BODY_LEN] = {0x00, 0x00, 0x08, 0x00, 0x00};
+  writeI16(&wire[7], INT16_MIN);   // LY full down
+  writeI16(&wire[11], INT16_MAX);  // RY full up
+
+  uint8_t hid[REPORT_BODY_LEN] = {};
+  wireToHidReport(wire, hid);
+
+  TEST_ASSERT_EQUAL_INT16(INT16_MAX, readI16(&hid[5]));  // saturates instead of overflowing
+  TEST_ASSERT_EQUAL_INT16(-INT16_MAX, readI16(&hid[9]));
+}
+
+void test_profile_messages() {
+  FrameParser parser(onFrame);
+  feedAll(parser, buildFrame(MSG_GET_PROFILE, {}));
+  feedAll(parser, buildFrame(MSG_SET_PROFILE, {0x02}));
+  feedAll(parser, buildFrame(MSG_SET_PROFILE, {}));  // wrong length: rejected
+
+  TEST_ASSERT_EQUAL_UINT32(2, g_frames.size());
+  TEST_ASSERT_EQUAL_HEX8(MSG_GET_PROFILE, g_frames[0].type);
+  TEST_ASSERT_EQUAL_HEX8(MSG_SET_PROFILE, g_frames[1].type);
+  TEST_ASSERT_EQUAL_UINT32(1, g_frames[1].payload.size());
+  TEST_ASSERT_EQUAL_HEX8(0x02, g_frames[1].payload[0]);
+}
+
 int main(int argc, char **argv) {
   (void) argc;
   (void) argv;
@@ -178,5 +236,8 @@ int main(int argc, char **argv) {
   RUN_TEST(test_rejects_unknown_type_without_swallowing_next_frame);
   RUN_TEST(test_sync_bytes_inside_payload_and_back_to_back_frames);
   RUN_TEST(test_recovers_valid_frame_starting_inside_corrupt_frame);
+  RUN_TEST(test_wire_to_hid_report_translation);
+  RUN_TEST(test_profile_messages);
+  RUN_TEST(test_wire_to_hid_y_axis_extremes);
   return UNITY_END();
 }

@@ -6,7 +6,7 @@ Pings the board, then presses A, sweeps the left stick and releases everything.
 Watch the result in a gamepad tester (e.g. https://hardwaretester.com/gamepad).
 
 Usage: python3 tools/test_link.py [/dev/cu.usbmodemXXXX]
-Requires pyserial (bundled with Homebrew PlatformIO: $(brew --prefix platformio)/libexec/bin/python).
+Requires pyserial (installed with PlatformIO in the project venv: .venv/bin/python).
 """
 import math
 import struct
@@ -16,7 +16,8 @@ import time
 import serial
 from serial.tools import list_ports
 
-VID, PID = 0x1209, 0x5854
+# The USB VID/PID depend on the emulated controller; the serial number prefix does not
+SERIAL_PREFIX = "LUMINA-"
 SYNC = b"\xA5\x5A"
 MSG_PING, MSG_REPORT, MSG_PONG = 0x01, 0x02, 0x81
 BTN_A = 1 << 0
@@ -42,20 +43,20 @@ def report(buttons=0, hat=HAT_NONE, lt=0, rt=0, lx=0, ly=0, rx=0, ry=0, pad=0) -
     return frame(MSG_REPORT, struct.pack("<BHBBBhhhh", pad, buttons, hat, lt, rt, lx, ly, rx, ry))
 
 
-def find_port() -> str:
-    if len(sys.argv) > 1:
-        return sys.argv[1]
-    matches = [p.device for p in list_ports.comports() if p.vid == VID and p.pid == PID]
+def find_port(explicit: str | None = None) -> str:
+    if explicit:
+        return explicit
+    matches = [p.device for p in list_ports.comports() if (p.serial_number or "").startswith(SERIAL_PREFIX)]
     if not matches:
         sys.exit(
-            f"No Lumina ESP Gamepad ({VID:04x}:{PID:04x}) serial port found; "
+            f"No serial port with a {SERIAL_PREFIX}* USB serial number found; "
             "is the board plugged into its native USB port?"
         )
     return sorted(matches)[0]
 
 
 def main():
-    port = find_port()
+    port = find_port(sys.argv[1] if len(sys.argv) > 1 else None)
 
     with serial.Serial(port, 115200, timeout=0.5) as link:
         link.reset_input_buffer()

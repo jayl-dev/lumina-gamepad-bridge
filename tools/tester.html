@@ -56,6 +56,12 @@
   th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); }
   td.miss { color: var(--bad); }
   .hint { color: var(--warn); font-size: 13px; margin-top: 8px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; border-right: 1px solid var(--line); }
+  .seg button:last-child { border-right: 0; }
+  .seg button.active { background: var(--accent); color: #fff; }
+  .mode { margin-top: 10px; }
+  .note { color: var(--muted); font-size: 12px; margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -72,6 +78,17 @@
         <button id="release" disabled>Release all</button>
         <span id="linkStatus" class="status">Not connected</span>
       </div>
+      <div class="row mode">
+        Controller mode:
+        <div class="seg" id="modes">
+          <button data-profile="0" disabled>Generic</button>
+          <button data-profile="1" disabled>DualShock 4</button>
+          <button data-profile="2" disabled>Switch Pro</button>
+        </div>
+      </div>
+      <div class="note">Switching restarts the board as the other controller (about 2 s). For Switch Pro, macOS's driver
+        fails to set the controller up if Chrome or Edge is talking to it at that moment; replug the board with them closed
+        if sticks read as dead in Ryujinx.</div>
 
       <div class="sticks">
         <div class="stick"><div class="well" data-stick="l"><div class="knob"></div></div>Left stick <span data-val="l">0, 0</span></div>
@@ -112,8 +129,16 @@
 
 <script>
 // ---- Protocol (must match lumina-gamepad-bridge/include/protocol.h and Lumina's esp_gamepad.m) ----
-const VID = 0x1209, PID = 0x5854, PROTOCOL_VERSION = 1;
-const MSG_PING = 0x01, MSG_REPORT = 0x02, MSG_PONG = 0x81;
+// USB IDs of each firmware profile: generic, DualShock 4, Switch Pro
+const BOARD_IDS = [
+  { usbVendorId: 0x2dc8, usbProductId: 0x3011 },
+  { usbVendorId: 0x054c, usbProductId: 0x09cc },
+  { usbVendorId: 0x057e, usbProductId: 0x2009 },
+];
+const PROTOCOL_VERSION = 1;
+const MSG_PING = 0x01, MSG_REPORT = 0x02, MSG_SET_PROFILE = 0x03, MSG_GET_PROFILE = 0x04;
+const MSG_PONG = 0x81, MSG_PROFILE = 0x83;
+const PROFILE_NAMES = ['Generic', 'DualShock 4', 'Switch Pro'];  // index = wire id = BOARD_IDS index
 
 function crc8(bytes) {
   let crc = 0;
@@ -174,6 +199,7 @@ function reportPayload() {
 
 // ---- Serial link ----
 let port = null, writer = null, writing = false, sendPending = false;
+let currentProfile = null, switching = false;
 const linkStatus = document.getElementById('linkStatus');
 
 function setStatus(text, cls = '') { linkStatus.textContent = text; linkStatus.className = 'status ' + cls; }
@@ -182,6 +208,14 @@ function setConnectedUI(connected) {
   document.getElementById('connect').disabled = connected;
   document.getElementById('disconnect').disabled = !connected;
   document.getElementById('release').disabled = !connected;
+  renderModes(connected);
+}
+
+function renderModes(connected = !!writer) {
+  for (const b of document.querySelectorAll('#modes button')) {
+    b.disabled = !connected || switching || currentProfile === null;
+    b.classList.toggle('active', Number(b.dataset.profile) === currentProfile);
+  }
 }
 
 async function closePort() {
@@ -222,7 +256,7 @@ if ('serial' in navigator) {
       port = writer = null;
       sendPending = false;
       setConnectedUI(false);
-      setStatus('Board unplugged', 'err');
+      if (!switching) setStatus('Board unplugged', 'err');
     }
   });
 }
@@ -232,15 +266,26 @@ async function connect() {
     setStatus('Web Serial is unavailable. Use Chrome/Edge, and serve this page from localhost if opened as a file fails.', 'err');
     return;
   }
+  let chosen;
   try {
-    port = await navigator.serial.requestPort({ filters: [{ usbVendorId: VID, usbProductId: PID }] });
+    chosen = await navigator.serial.requestPort({ filters: BOARD_IDS });
+  } catch (e) {
+    setStatus(e.message, 'err');
+    return;
+  }
+  await openPort(chosen);
+}
+
+async function openPort(chosen) {
+  try {
+    port = chosen;
     await port.open({ baudRate: 115200 });
   } catch (e) {
     setStatus(e.name === 'InvalidStateError' || /open/i.test(e.message)
       ? 'Could not open the port. Is Lumina or another serial monitor using it?'
       : e.message, 'err');
     port = null;
-    return;
+    return false;
   }
   writer = port.writable.getWriter();
 
@@ -248,22 +293,32 @@ async function connect() {
   if (!pong) {
     await closePort();
     setStatus('Board did not answer ping. Is the Lumina firmware flashed?', 'err');
-    return;
+    return false;
   }
   if (pong.version !== PROTOCOL_VERSION) {
     await closePort();
     setStatus(`Firmware speaks protocol v${pong.version}, tester expects v${PROTOCOL_VERSION}`, 'err');
-    return;
+    return false;
   }
-  setStatus(`Connected · protocol v${pong.version} · ${pong.pads} pad(s)`, 'ok');
+  const profile = await request(MSG_GET_PROFILE, [], MSG_PROFILE, 1);
+  currentProfile = profile ? profile[0] : null;  // null: firmware without profile switching
+  const mode = currentProfile === null ? '' : ` · ${PROFILE_NAMES[currentProfile]}`;
+  setStatus(`Connected · protocol v${pong.version} · ${pong.pads} pad(s)${mode}`, 'ok');
   setConnectedUI(true);
   scheduleSend();
+  return true;
 }
 
 async function ping() {
+  const reply = await request(MSG_PING, [], MSG_PONG, 2);
+  return reply ? { version: reply[0], pads: reply[1] } : null;
+}
+
+// Sends a frame and waits for a reply frame of the given type; returns its payload or null.
+async function request(type, payload, replyType, replyLen, timeoutMs = 1000) {
   const reader = port.readable.getReader();
-  await writer.write(frame(MSG_PING));
-  const deadline = Date.now() + 1000;
+  await writer.write(frame(type, new Uint8Array(payload)));
+  const deadline = Date.now() + timeoutMs;
   let buf = new Uint8Array();
   try {
     while (Date.now() < deadline) {
@@ -275,10 +330,10 @@ async function ping() {
       if (!value) continue;
       const next = new Uint8Array(buf.length + value.length);
       next.set(buf); next.set(value, buf.length); buf = next;
-      for (let i = 0; i + 7 <= buf.length; i++) {
-        if (buf[i] === 0xa5 && buf[i + 1] === 0x5a && buf[i + 2] === MSG_PONG && buf[i + 3] === 2 &&
-            crc8(buf.subarray(i + 2, i + 6)) === buf[i + 6]) {
-          return { version: buf[i + 4], pads: buf[i + 5] };
+      for (let i = 0; i + 5 + replyLen <= buf.length; i++) {
+        if (buf[i] === 0xa5 && buf[i + 1] === 0x5a && buf[i + 2] === replyType && buf[i + 3] === replyLen &&
+            crc8(buf.subarray(i + 2, i + 4 + replyLen)) === buf[i + 4 + replyLen]) {
+          return buf.slice(i + 4, i + 4 + replyLen);
         }
       }
     }
@@ -287,6 +342,49 @@ async function ping() {
     await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
+}
+
+// ---- Controller mode ----
+async function switchProfile(id) {
+  if (!writer || switching || id === currentProfile) return;
+  switching = true;
+  renderModes();
+  resetState();
+  const reply = await request(MSG_SET_PROFILE, [id], MSG_PROFILE, 1).catch(() => null);
+  if (!reply || reply[0] !== id) {
+    switching = false;
+    renderModes();
+    setStatus('The board did not accept the mode change', 'err');
+    return;
+  }
+  setStatus(`Switching to ${PROFILE_NAMES[id]}… the board is restarting`);
+  await closePort();
+
+  // Reconnect once the board re-enumerates with the new USB identity. Chrome only lists
+  // ports for identities this page was granted, so the first switch to a mode needs a click.
+  const target = BOARD_IDS[id];
+  const deadline = Date.now() + 12000;
+  await new Promise(r => setTimeout(r, 1500));
+  while (Date.now() < deadline) {
+    const ports = await navigator.serial.getPorts();
+    const match = ports.find(p => {
+      const info = p.getInfo();
+      return info.usbVendorId === target.usbVendorId && info.usbProductId === target.usbProductId;
+    });
+    if (match && await openPort(match)) {
+      switching = false;
+      renderModes();
+      return;
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
+  switching = false;
+  renderModes();
+  setStatus(`The board restarted as ${PROFILE_NAMES[id]}. Click "Connect board" to reconnect (Chrome asks once per mode).`);
+}
+
+for (const b of document.querySelectorAll('#modes button')) {
+  b.addEventListener('click', () => switchProfile(Number(b.dataset.profile)));
 }
 
 // Only the latest state matters: coalesce changes while a write is in flight.
@@ -417,7 +515,10 @@ let selectedIndex = null;
 
 function pads() { return [...navigator.getGamepads()].filter(Boolean); }
 function selectedPad() { return selectedIndex === null ? null : navigator.getGamepads()[selectedIndex]; }
-const isOurs = gp => /5854/i.test(gp.id) || /lumina/i.test(gp.id);
+// Matches the board under any profile (a real DS4 / Pro Controller matches too; pick from the list)
+const isOurs = gp => /lumina/i.test(gp.id) ||
+  BOARD_IDS.some(({ usbVendorId, usbProductId }) =>
+    new RegExp(`${usbVendorId.toString(16).padStart(4, '0')}.*${usbProductId.toString(16).padStart(4, '0')}`, 'i').test(gp.id));
 
 function refreshPadList() {
   const list = pads();

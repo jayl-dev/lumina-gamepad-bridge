@@ -6,19 +6,21 @@
 
 namespace lumina {
 
-static constexpr uint16_t LUMINA_USB_VID = 0x1209;
-static constexpr uint16_t LUMINA_USB_PID = 0x5854;
-
 static constexpr uint8_t PROTOCOL_VERSION = 1;
 static constexpr uint8_t PAD_COUNT = 1;
 
 static constexpr uint8_t FRAME_SYNC0 = 0xA5;
 static constexpr uint8_t FRAME_SYNC1 = 0x5A;
+// Host -> board
 static constexpr uint8_t MSG_PING = 0x01;
 static constexpr uint8_t MSG_REPORT = 0x02;
+static constexpr uint8_t MSG_SET_PROFILE = 0x03;  // len 1: profile id; the board restarts as that controller
+static constexpr uint8_t MSG_GET_PROFILE = 0x04;  // len 0
+// Board -> host
 static constexpr uint8_t MSG_PONG = 0x81;
+static constexpr uint8_t MSG_PROFILE = 0x83;      // len 1: active (or newly selected) profile id
 
-static constexpr uint8_t REPORT_ID = 0x01;
+// Lumina's wire report body: hid_gamepad.m's HIDGamepadReport without the report ID
 static constexpr size_t REPORT_BODY_LEN = 13;  // buttons(2) hat(1) triggers(2) sticks(8)
 static constexpr size_t MAX_PAYLOAD_LEN = 1 + REPORT_BODY_LEN;
 
@@ -36,9 +38,12 @@ inline uint8_t crc8(const uint8_t *data, size_t len) {
 inline int expectedPayloadLen(uint8_t type) {
   switch (type) {
     case MSG_PING:
+    case MSG_GET_PROFILE:
       return 0;
     case MSG_REPORT:
       return 1 + REPORT_BODY_LEN;
+    case MSG_SET_PROFILE:
+      return 1;
     default:
       return -1;
   }
