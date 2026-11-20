@@ -9,8 +9,14 @@ host for Moonlight clients).
 When a Moonlight client connects a controller, the streaming host has to make it appear on the Mac.
 Lumina's built-in option creates a virtual HID device (`IOHIDUserDevice`), which macOS only allows
 with the restricted `com.apple.developer.hid.virtual.device` entitlement, which in practice means
-disabling SIP/AMFI and self-signing Lumina. Without that, Lumina can only turn the controller into
-keyboard and mouse events.
+disabling SIP/AMFI and self-signing Lumina.
+
+Without that, Lumina still accepts the controller but turns it into keyboard and mouse input on a
+fixed, shooter-style layout: A/B/X/Y → Space/E/R/F, LB/RB → Q/Tab, Back/Start → Tab/Esc,
+L3/R3 → Shift/V, D-pad → 1–4, left stick → mouse movement, RT/LT → left/right click, and the right
+stick does nothing. That's fine for games that take keyboard and mouse, but games and emulators
+that expect a gamepad (Ryujinx, CrossOver titles, native controller games) don't see one, and
+there's no analog stick or trigger control.
 
 This bridge avoids all of that. The ESP32-S3 plugs into the Mac and **is** a USB controller, so
 macOS, games, emulators and CrossOver see ordinary wired hardware. No entitlements, no SIP or AMFI
