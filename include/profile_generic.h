@@ -107,6 +107,12 @@ public:
     (void) len;
   }
 
+  // No output reports, so no rumble
+  bool takeRumble(Rumble &out) {
+    (void) out;
+    return false;
+  }
+
   uint16_t getFeature(uint8_t id, uint8_t *buf, uint16_t len) const {
     (void) id;
     (void) buf;

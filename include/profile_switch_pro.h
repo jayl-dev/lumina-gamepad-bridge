@@ -170,9 +170,26 @@ public:
     if (id == OUT_USB && len >= 1) {
       handleUsbCommand(data[0]);
     } else if (id == OUT_SUBCOMMAND && len >= 10) {
+      handleRumble(&data[1]);
       handleSubcommand(data[9], &data[10], static_cast<uint16_t>(len - 10));
+    } else if (id == OUT_RUMBLE && len >= 9) {
+      handleRumble(&data[1]);
     }
-    // OUT_RUMBLE: no rumble motor to drive
+  }
+
+  bool takeRumble(Rumble &out) { return rumble_.take(out); }
+
+  /**
+   * HD rumble for one side (4 bytes) -> amplitude index 0..100 of each band:
+   *   [1] high-band amplitude << 1 (bit 0 = frequency bit 8)
+   *   [2] bit 7 = low-band amplitude bit 0, [3] low-band amplitude >> 1, offset by 0x40
+   * Neutral is 00 01 40 40. SDL puts the game's high/low-frequency strengths in these bands.
+   */
+  static void decodeRumbleSide(const uint8_t *b, uint8_t *highBand, uint8_t *lowBand) {
+    uint8_t high = static_cast<uint8_t>(b[1] >> 1);
+    uint8_t low = static_cast<uint8_t>((((b[3] - 0x40) & 0x7F) << 1) | (b[2] >> 7));
+    *highBand = high > 100 ? 100 : high;
+    *lowBand = low > 100 ? 100 : low;
   }
 
   uint16_t getFeature(uint8_t id, uint8_t *buf, uint16_t len) const {
@@ -278,6 +295,16 @@ public:
   }
 
 private:
+  // Bytes 0-3 drive the left motor, 4-7 the right; each Moonlight motor takes the stronger side.
+  void handleRumble(const uint8_t *hd) {
+    uint8_t leftHigh, leftLow, rightHigh, rightLow;
+    decodeRumbleSide(&hd[0], &leftHigh, &leftLow);
+    decodeRumbleSide(&hd[4], &rightHigh, &rightLow);
+    uint8_t low = leftLow > rightLow ? leftLow : rightLow;
+    uint8_t high = leftHigh > rightHigh ? leftHigh : rightHigh;
+    rumble_.set({static_cast<uint16_t>(low * 65535u / 100), static_cast<uint16_t>(high * 65535u / 100)});
+  }
+
   struct SpiRegion {
     uint32_t addr;
     uint8_t len;
@@ -410,6 +437,7 @@ private:
   static constexpr uint8_t kQueueSize = 8;
 
   PadState state_;
+  RumbleState rumble_;
   uint8_t mac_[6] = {};
   uint8_t timer_ = 0;
   bool streaming_ = false;

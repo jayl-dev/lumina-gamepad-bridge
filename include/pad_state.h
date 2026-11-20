@@ -85,6 +85,45 @@ inline PadState decodeWire(const uint8_t *wire) {
 }
 
 /**
+ * Rumble motor strengths as Moonlight models them: low = heavy low-frequency motor (left),
+ * high = light high-frequency motor (right), each 0..65535.
+ */
+struct Rumble {
+  uint16_t low = 0;
+  uint16_t high = 0;
+
+  bool operator==(const Rumble &o) const { return low == o.low && high == o.high; }
+  bool operator!=(const Rumble &o) const { return !(*this == o); }
+};
+
+/**
+ * Latest rumble a profile decoded from the host's output reports; reported to Lumina only
+ * when it changes (games resend unchanged rumble constantly).
+ */
+class RumbleState {
+public:
+  void set(const Rumble &r) {
+    if (r != current_) {
+      current_ = r;
+      dirty_ = true;
+    }
+  }
+
+  bool take(Rumble &out) {
+    if (!dirty_) {
+      return false;
+    }
+    out = current_;
+    dirty_ = false;
+    return true;
+  }
+
+private:
+  Rumble current_;
+  bool dirty_ = false;
+};
+
+/**
  * An HID input report to send: report ID plus payload (without the ID byte).
  */
 struct HidReport {

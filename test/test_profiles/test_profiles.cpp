@@ -441,6 +441,96 @@ void test_profile_cycle_and_validation() {
   TEST_ASSERT_FALSE(isValidProfile(3));
 }
 
+// ---- Rumble ----
+
+void test_ds4_rumble_from_effects_report() {
+  Ds4Profile p;
+  Rumble r;
+  TEST_ASSERT_FALSE(p.takeRumble(r));
+
+  // Report 0x05 without its ID: flags, 2 reserved, right (light), left (heavy)
+  uint8_t out[31] = {Ds4Profile::EFFECT_RUMBLE, 0, 0, 0x80, 0xFF};
+  p.onOutput(Ds4Profile::OUTPUT_EFFECTS, out, sizeof(out));
+  TEST_ASSERT_TRUE(p.takeRumble(r));
+  TEST_ASSERT_EQUAL_UINT16(65535, r.low);
+  TEST_ASSERT_EQUAL_UINT16(0x80 * 257, r.high);
+  TEST_ASSERT_FALSE(p.takeRumble(r));  // reported once
+
+  p.onOutput(Ds4Profile::OUTPUT_EFFECTS, out, sizeof(out));  // unchanged: nothing new
+  TEST_ASSERT_FALSE(p.takeRumble(r));
+
+  uint8_t ledOnly[31] = {0x02, 0, 0, 0, 0};  // lightbar update must not stop the rumble
+  p.onOutput(Ds4Profile::OUTPUT_EFFECTS, ledOnly, sizeof(ledOnly));
+  TEST_ASSERT_FALSE(p.takeRumble(r));
+}
+
+// SDL's EncodeRumble: index i (0..100) per band, high band 2*i, low band 0x40 + i/2 with bit 0 in byte 2
+static void encodeSdlRumble(uint8_t highIndex, uint8_t lowIndex, uint8_t *side) {
+  if (highIndex == 0 && lowIndex == 0) {
+    const uint8_t neutral[4] = {0x00, 0x01, 0x40, 0x40};
+    std::memcpy(side, neutral, 4);
+    return;
+  }
+  const uint16_t highFreq = 0x0074;
+  const uint8_t lowFreq = 0x3D;
+  side[0] = highFreq & 0xFF;
+  side[1] = static_cast<uint8_t>((highIndex * 2) | ((highFreq >> 8) & 0x01));
+  side[2] = static_cast<uint8_t>(lowFreq | ((lowIndex & 1) << 7));
+  side[3] = static_cast<uint8_t>(0x40 + (lowIndex >> 1));
+}
+
+void test_switch_rumble_decodes_hd_rumble() {
+  SwitchProProfile p;
+  p.begin(kMac);
+  Rumble r;
+  uint8_t out[63] = {};
+
+  // Rumble-only report 0x10: [0] counter, [1..4] left, [5..8] right
+  encodeSdlRumble(50, 100, &out[1]);
+  encodeSdlRumble(50, 100, &out[5]);
+  p.onOutput(SwitchProProfile::OUT_RUMBLE, out, sizeof(out));
+  TEST_ASSERT_TRUE(p.takeRumble(r));
+  TEST_ASSERT_EQUAL_UINT16(65535, r.low);
+  TEST_ASSERT_EQUAL_UINT16(50 * 65535u / 100, r.high);
+
+  // Subcommand reports carry rumble too; neutral stops it
+  encodeSdlRumble(0, 0, &out[1]);
+  encodeSdlRumble(0, 0, &out[5]);
+  out[9] = 0x30;  // player lights subcommand
+  p.onOutput(SwitchProProfile::OUT_SUBCOMMAND, out, sizeof(out));
+  TEST_ASSERT_TRUE(p.takeRumble(r));
+  TEST_ASSERT_EQUAL_UINT16(0, r.low);
+  TEST_ASSERT_EQUAL_UINT16(0, r.high);
+  HidReport reply;
+  TEST_ASSERT_TRUE(p.nextReport(0, reply));  // the subcommand is still answered
+  TEST_ASSERT_EQUAL_HEX8(0x21, reply.id);
+}
+
+void test_switch_rumble_takes_stronger_side() {
+  SwitchProProfile p;
+  Rumble r;
+  uint8_t out[63] = {};
+  encodeSdlRumble(0, 0, &out[1]);     // left idle
+  encodeSdlRumble(25, 75, &out[5]);   // right active
+  p.onOutput(SwitchProProfile::OUT_RUMBLE, out, sizeof(out));
+  TEST_ASSERT_TRUE(p.takeRumble(r));
+  TEST_ASSERT_EQUAL_UINT16(75 * 65535u / 100, r.low);
+  TEST_ASSERT_EQUAL_UINT16(25 * 65535u / 100, r.high);
+}
+
+void test_any_profile_rumble_dispatch() {
+  Rumble r;
+  AnyProfile generic(ProfileKind::Generic);
+  uint8_t out[31] = {Ds4Profile::EFFECT_RUMBLE, 0, 0, 0xFF, 0xFF};
+  generic.onOutput(Ds4Profile::OUTPUT_EFFECTS, out, sizeof(out));
+  TEST_ASSERT_FALSE(generic.takeRumble(r));
+
+  AnyProfile ds4(ProfileKind::Ds4);
+  ds4.onOutput(Ds4Profile::OUTPUT_EFFECTS, out, sizeof(out));
+  TEST_ASSERT_TRUE(ds4.takeRumble(r));
+  TEST_ASSERT_EQUAL_UINT16(65535, r.low);
+}
+
 int main(int argc, char **argv) {
   (void) argc;
   (void) argv;
@@ -467,5 +557,9 @@ int main(int argc, char **argv) {
   RUN_TEST(test_any_profile_identity_and_descriptor_follow_selection);
   RUN_TEST(test_any_profile_dispatches_reports_to_selected_profile);
   RUN_TEST(test_profile_cycle_and_validation);
+  RUN_TEST(test_ds4_rumble_from_effects_report);
+  RUN_TEST(test_switch_rumble_decodes_hd_rumble);
+  RUN_TEST(test_switch_rumble_takes_stronger_side);
+  RUN_TEST(test_any_profile_rumble_dispatch);
   return UNITY_END();
 }

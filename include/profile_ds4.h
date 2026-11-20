@@ -137,12 +137,20 @@ public:
 
   void setState(const PadState &s) { state_ = s; }
 
-  // Output report 0x05 (rumble / lightbar) needs no reply.
+  static constexpr uint8_t OUTPUT_EFFECTS = 0x05;
+  static constexpr uint8_t EFFECT_RUMBLE = 0x01;
+
+  /**
+   * Output report 0x05 (rumble / lightbar, no reply). Without its report ID: [0] effect flags,
+   * [3] right (light, high-frequency) motor, [4] left (heavy, low-frequency) motor, 0..255.
+   */
   void onOutput(uint8_t id, const uint8_t *data, uint16_t len) {
-    (void) id;
-    (void) data;
-    (void) len;
+    if (id == OUTPUT_EFFECTS && len >= 5 && (data[0] & EFFECT_RUMBLE)) {
+      rumble_.set({static_cast<uint16_t>(data[4] * 257), static_cast<uint16_t>(data[3] * 257)});
+    }
   }
+
+  bool takeRumble(Rumble &out) { return rumble_.take(out); }
 
   /**
    * GET_REPORT(Feature). Fills `buf` without the report ID (TinyUSB prepends it).
@@ -263,6 +271,7 @@ public:
 
 private:
   PadState state_;
+  RumbleState rumble_;
   uint8_t mac_[6] = {};
   uint8_t counter_ = 0;
   uint32_t lastReportUs_ = 0;

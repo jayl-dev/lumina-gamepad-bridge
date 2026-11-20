@@ -102,6 +102,10 @@ public:
     return visit([&](const auto &p) { return p.getFeature(id, buf, len); });
   }
 
+  bool takeRumble(Rumble &out) {
+    return visit([&](auto &p) { return p.takeRumble(out); });
+  }
+
   bool nextReport(uint32_t nowUs, HidReport &out) {
     return visit([&](auto &p) { return p.nextReport(nowUs, out); });
   }

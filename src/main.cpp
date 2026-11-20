@@ -189,8 +189,13 @@ void tud_cdc_line_coding_cb(uint8_t itf, cdc_line_coding_t const *coding) {
 
 // ---- Serial link from Lumina ----
 
+static constexpr uint8_t MAX_REPLY_PAYLOAD = 8;
+
 static void sendFrame(uint8_t type, const uint8_t *payload, uint8_t len) {
-  uint8_t frame[4 + 2 + 1] = {FRAME_SYNC0, FRAME_SYNC1, type, len};
+  if (len > MAX_REPLY_PAYLOAD) {
+    return;
+  }
+  uint8_t frame[4 + MAX_REPLY_PAYLOAD + 1] = {FRAME_SYNC0, FRAME_SYNC1, type, len};
   memcpy(&frame[4], payload, len);
   frame[4 + len] = crc8(&frame[2], 2 + len);
   // Never wait for space: if the host isn't reading, it can ask again
@@ -206,6 +211,13 @@ static void sendPong() {
 }
 
 static void sendProfile(uint8_t id) { sendFrame(MSG_PROFILE, &id, 1); }
+
+static void sendRumble(const Rumble &r) {
+  uint8_t payload[5] = {0};  // pad 0
+  writeU16(&payload[1], r.low);
+  writeU16(&payload[3], r.high);
+  sendFrame(MSG_RUMBLE, payload, sizeof(payload));
+}
 
 static void handleFrame(uint8_t type, const uint8_t *payload, uint8_t len) {
   switch (type) {
@@ -266,6 +278,12 @@ static void usbService(void *) {
     if (tud_hid_report(pendingReport.id, pendingReport.data, pendingReport.len)) {
       havePendingReport = false;
     }
+  }
+
+  // Rumble from the game (decoded from output reports) goes back to Lumina for the client
+  Rumble rumble;
+  if (profile.takeRumble(rumble) && hostConnected) {
+    sendRumble(rumble);
   }
 
   servicePending = false;

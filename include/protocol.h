@@ -19,6 +19,7 @@ static constexpr uint8_t MSG_GET_PROFILE = 0x04;  // len 0
 // Board -> host
 static constexpr uint8_t MSG_PONG = 0x81;
 static constexpr uint8_t MSG_PROFILE = 0x83;      // len 1: active (or newly selected) profile id
+static constexpr uint8_t MSG_RUMBLE = 0x84;       // len 5: pad, low-frequency u16 LE, high-frequency u16 LE
 
 // Lumina's wire report body: hid_gamepad.m's HIDGamepadReport without the report ID
 static constexpr size_t REPORT_BODY_LEN = 13;  // buttons(2) hat(1) triggers(2) sticks(8)
